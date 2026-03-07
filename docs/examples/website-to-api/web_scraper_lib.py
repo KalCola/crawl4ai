@@ -50,6 +50,31 @@ class WebScraperAgent:
         os.makedirs(self.schemas_dir, exist_ok=True)
         os.makedirs(self.models_dir, exist_ok=True)
     
+    def _get_model_config_path(self, model_name: str) -> str:
+        """
+        Safely construct the path to a model configuration file.
+        
+        This method ensures that the resulting path stays within the models_dir
+        directory and mitigates path traversal attacks.
+        """
+        if not model_name:
+            raise ValueError("Model name must not be empty")
+        
+        # Disallow path separators and leading dots to avoid hidden files and traversal
+        if os.sep in model_name or (os.altsep and os.altsep in model_name) or model_name.startswith("."):
+            raise ValueError(f"Invalid model name: {model_name}")
+        
+        base_dir = os.path.abspath(self.models_dir)
+        config_path = os.path.abspath(
+            os.path.normpath(os.path.join(base_dir, f"{model_name}.json"))
+        )
+        
+        # Ensure the final path is within the models directory
+        if not (config_path == base_dir or config_path.startswith(base_dir + os.sep)):
+            raise ValueError(f"Invalid model config path for model: {model_name}")
+        
+        return config_path
+    
     def _generate_schema_key(self, url: str, query: str) -> str:
         """Generate a unique key for schema caching based on URL and query."""
         content = f"{url}:{query}"
@@ -69,7 +94,7 @@ class WebScraperAgent:
         """
         try:
             model_config = ModelConfig(provider, api_token)
-            config_path = os.path.join(self.models_dir, f"{model_name}.json")
+            config_path = self._get_model_config_path(model_name)
             
             with open(config_path, "w") as f:
                 json.dump(model_config.to_dict(), f, indent=2)
@@ -91,7 +116,7 @@ class WebScraperAgent:
             ModelConfig object or None if not found
         """
         try:
-            config_path = os.path.join(self.models_dir, f"{model_name}.json")
+            config_path = self._get_model_config_path(model_name)
             if not os.path.exists(config_path):
                 return None
             
@@ -122,7 +147,7 @@ class WebScraperAgent:
             True if deleted successfully
         """
         try:
-            config_path = os.path.join(self.models_dir, f"{model_name}.json")
+            config_path = self._get_model_config_path(model_name)
             if os.path.exists(config_path):
                 os.remove(config_path)
                 print(f"Model configuration deleted: {model_name}")
