@@ -36,6 +36,55 @@ class UserHookManager:
         self.compiled_hooks: Dict[str, Callable] = {}
         self.execution_log: List[Dict[str, Any]] = []
     
+    def _validate_hook_ast(self, tree: ast.AST, hook_point: str) -> None:
+        """
+        Security validation for hook AST.
+        
+        Raises:
+            ValueError if disallowed syntax is detected.
+        """
+        # Disallow import statements entirely – hooks must rely on pre-imported modules.
+        disallowed_nodes = (
+            ast.Import,
+            ast.ImportFrom,
+            ast.Global,
+            ast.Nonlocal,
+            ast.Lambda,
+            ast.ClassDef,
+            ast.With,
+            ast.AsyncWith,
+            ast.Try,
+            ast.Raise,
+            ast.Delete,
+            ast.AugAssign,
+        )
+        disallowed_names = {
+            "__import__",
+            "eval",
+            "exec",
+            "open",
+            "compile",
+            "__builtins__",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, disallowed_nodes):
+                raise ValueError(
+                    f"Disallowed construct '{type(node).__name__}' in hook '{hook_point}'"
+                )
+            # Forbid attribute access to private/dunder attributes to reduce escape surface.
+            if isinstance(node, ast.Attribute) and isinstance(node.attr, str):
+                if node.attr.startswith("_"):
+                    raise ValueError(
+                        f"Access to private attribute '{node.attr}' is not allowed in hook '{hook_point}'"
+                    )
+            # Forbid calls to some dangerous builtins by name.
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in disallowed_names:
+                    raise ValueError(
+                        f"Call to disallowed function '{func.id}' in hook '{hook_point}'"
+                    )
+    
     def validate_hook_structure(self, hook_code: str, hook_point: str) -> Tuple[bool, str]:
         """
         Validate the structure of user-provided hook code
@@ -140,14 +189,23 @@ class UserHookManager:
                 '__builtins__': safe_builtins
             }
             
-            # Add commonly needed imports
+            # Add commonly needed imports to the namespace
             exec("import asyncio", namespace)
             exec("import json", namespace)
             exec("import re", namespace)
             exec("from typing import Dict, List, Optional", namespace)
             
-            # Execute the code to define the function
-            exec(hook_code, namespace)
+            # SECURITY: Parse and validate AST before compiling to prevent dangerous constructs.
+            parsed_ast = ast.parse(hook_code, mode="exec")
+            self._validate_hook_ast(parsed_ast, hook_point)
+            code_obj = compile(
+                parsed_ast,
+                filename=f"<user_hook_{hook_point}>",
+                mode="exec"
+            )
+            
+            # Execute the compiled code to define the function
+            exec(code_obj, namespace)
             
             # Find the async function in the namespace
             for name, obj in namespace.items():
